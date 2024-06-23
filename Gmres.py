@@ -340,7 +340,7 @@ def alphaGMRESM(A, b, x0, m, tol, maxiter):
     return x, res, k
 
 def PDGMRESM(A,b,x0,m,tol,maxiter):
-    m_max = m*3
+    m_max = m
     n = np.shape(A)[0]
     k = 0
     i = 0
@@ -387,11 +387,11 @@ def PDGMRESM(A,b,x0,m,tol,maxiter):
 
 
 counter = gmres_counter()
-n =64
+n =128
 tol = 1e-8
 fig,(ax) = plt.subplots(1)
 
-A,b,xexact,x0,nn = setup_2d_poisson(n)#convdiff(n,central_differences=False)
+A,b,xexact,x0,nn = setup_2d_convdiff(n,central_differences=False)
 k = nn
 print(k)
 
@@ -438,23 +438,27 @@ for i in steps:
 
 
 start = time.time()
-sol,res,it,_ = GMRES(A,b,x0,10000,tol,10000)
+sol,res,it,_ = GMRES(A,b,x0,k,tol,k)
 
 end = time.time()
-print(np.linalg.norm(sol-sol1))
 print('GMRES TIME: ',end-start)
 timeee = end-start
-
+print(timeee)
 ax.plot(res ,label='GMRES',linewidth=3,linestyle='-')
 
 plt.legend()
 
 plt.xlim(0.)
 plt.yscale('log')
-
+plt.ylabel('residual norm')
+plt.xlabel('iterations')
 plt.show()
+gmrestime = []
+for i in range(len(steps)):
+    gmrestime.append(timeee)
 
-plt.scatter(0,timeee,label='GMRES',color='blue')
+plt.scatter(steps,gmrestime,label='GMRES',color='blue')
+plt.plot(steps,gmrestime,color='blue')
 
 plt.scatter(steps,t,label='PDGMRES',color='orange')
 plt.plot(steps,t,color='orange')
@@ -467,7 +471,10 @@ plt.plot(steps,t2,color='red')
 plt.scatter(steps,t3,label='GMRES(m)',color='green')
 plt.plot(steps,t3,color='green')
 plt.yscale('log')
+plt.ylim(1)
 plt.xticks(steps)
+plt.ylabel('time in s')
+plt.xlabel('m')
 plt.legend()
 plt.show()
 #print(counter.niter)
