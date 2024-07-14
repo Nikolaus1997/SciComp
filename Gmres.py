@@ -3,7 +3,10 @@ import sys
 from matplotlib import pyplot as plt
 from scipy.sparse import csc_matrix
 import time
+
+from mpl_toolkits.mplot3d import axes3d
 np.set_printoptions(threshold=sys.maxsize)
+from scipy.sparse.linalg import lgmres
 #assembly of Ax=b from -u''(x) = f(x) on ]0,1[ and u(0)=u(1)=0  
 #using central finite differences and the exact solution u(x) = (x(1-x))^2
 class gmres_counter(object):
@@ -16,14 +19,14 @@ class gmres_counter(object):
         self.internal_list.append(elem)
     def getList(self):
         return self.internal_list
-    def __call__(self, xk=None):
-       self.callbacks.append(xk)
-       self.internal_list.append(xk)
+    def __call__(self, rk=None):
+       self.callbacks.append(rk)
+       self.internal_list.append(rk)
        self.niter += 1
 def setup_1d_poisson(n):
     h = 1./(n)
     nn = n
-    A = 2.*sp.eye(n)-np.diag(np.ones(n-1), 1)-np.diag(np.ones(n-1),-1)
+    A = 2.*np.eye(n)-np.diag(np.ones(n-1), 1)-np.diag(np.ones(n-1),-1)
     A = csc_matrix(A)
     xexact = np.zeros(n)
     x0 = np.zeros(n)
@@ -37,94 +40,110 @@ def setup_1d_poisson(n):
     return A,b,xexact,x0,nn
 
 def setup_2d_poisson(n):
-    # compute mesh width from n (number of interior points per dimension)
-    h = 1 / (n)
-    nn = n*n
-    # assemble coefficient matrix A, quick and dirty 
+    # Compute mesh width from n (number of interior points per dimension)
+    h = 1 / (n +1)
+    nn = n * n
+    
+    # Assemble coefficient matrix A
     I = np.eye(n)
-    row_ind = np.arange(1,n,1)
-    col_ind = np.arange(0,n-1,1)
+    row_ind = np.arange(1, n, 1)
+    col_ind = np.arange(0, n-1, 1)
     data = np.ones(n-1)
-    E = csc_matrix((data,(row_ind, col_ind)), shape=[n,n])
-    D = E+E.T-2*I
-    A = -(np.kron(D,I)+np.kron(I,D))
+    E = csc_matrix((data, (row_ind, col_ind)), shape=[n, n])
+    D = E + E.T - 2 * I
+    A = -(np.kron(D, I) + np.kron(I, D))
     A = csc_matrix(A)
-    # initialise remaining vectors
-    xexact = np.zeros(n*n)
-    x0 = np.zeros(n*n)
-    b = np.zeros(n*n)
-    # compute RHS and exact solution (inner points only)
-    for i in range(1,n):
-      for j in range(1,n):
-        xij = (i)*h
-        yij = (j)*h
-        b[(j-1)*(n)+i-1] = -2*(6*xij**2-6*xij+1)*(yij-1)**2*yij**2 - 2*(xij-1)**2*xij**2*(6*yij**2-6*yij+1)
-        b[(j-1)*(n)+i-1] = b[(j-1)*(n)+i-1] * (h*h)
-        xexact[(j-1)*(n)+i-1] = (xij*(1-xij)*yij*(1-yij))**2
-    return [A,b,xexact,x0,nn]
+    
+    # Initialize remaining vectors
+    xexact = np.zeros(nn)
+    x0 = np.zeros(nn)
+    b = np.zeros(nn)
+    
+    # Compute RHS and exact solution (inner points only)
+    for i in range(n):
+        for j in range(n):
+            xij = (i + 1) * h
+            yij = (j + 1) * h
+            b[j * n + i] = -2 * (6 * xij**2 - 6 * xij + 1) * (yij - 1)**2 * yij**2 - \
+                           2 * (xij - 1)**2 * xij**2 * (6 * yij**2 - 6 * yij + 1)
+            b[j * n + i] = b[j * n + i] * (h * h)
+            xexact[j * n + i] = (xij * (1 - xij) * yij * (1 - yij))**2
+    
+    return [A, b, xexact, x0, nn]
 
-def setup_2d_convdiff(n,central_differences):
-    h = 1/(n)
-    nn = (n)*(n)
-    a = lambda x,y:  20.*np.exp(3.5*(x**2+y**2))
-    dadx = lambda x,y: 140.*x*np.exp(3.5*(x**2+y**2))
-    A = np.zeros((nn,nn))
+def setup_2d_convdiff(n, central_differences):
+    h = 1 / (n + 1)
+    nn = n * n
+    dimstr = f"{n}x{n}"
 
-    #A = csc_matrix(A)
-    for i in range(1,n):
-        xij = i*h
-        for j in range(1,n):
-            yij = j*h
-            k = (j-1)*n + i
-            kiP = (j-1)*n + i + 1
-            kiM = (j-1)*n + i - 1
-            kjP = j*n + i
-            kjM = (j-2)*n + i
-            A[k][k] = A[k][k]+4.
-            if j<n:
-                A[k][kjP] = A[k][kjP]-1
-            
-            if j>1:
-                A[k][kjM] = A[k][kjM]-1
+    a = lambda x, y: 20 * np.exp(3.5 * (x**2 + y**2))
+    dadx = lambda x, y: 140 * x * np.exp(3.5 * (x**2 + y**2))
 
+    A = np.zeros((nn, nn))
+
+    for i in range(1, n + 1):
+        xij = i * h  # x coordinate
+        for j in range(1, n + 1):
+            yij = j * h  # y coordinate
+            k = (j - 1) * n + i  # center index (linear)
+            kiP = (j - 1) * n + i + 1  # i+1
+            kiM = (j - 1) * n + i - 1  # i-1
+            kjP = j * n + i  # j+1
+            kjM = (j - 2) * n + i  # j-1
+
+            # center part of FD stencil (x & y) : - 4 u(i,j)
+            A[k - 1, k - 1] += 4
+
+            # d^2/dy^2 \approx ( u(i,j+1) - 2 u(i,j) + u(i,j-1) ); - 2 u(i,j) included in center part
+            if j < n:
+                A[k - 1, kjP - 1] -= 1
+            if j > 1:
+                A[k - 1, kjM - 1] -= 1
+
+            # d^2/dx^2 \approx ( u(i+1,j) - 2 u(i,j) + u(i-1,j) ); - 2 u(i,j) included in center part
             if i < n:
-                A[k][kiP] = A[k][kiP]-1
+                A[k - 1, kiP - 1] -= 1
+            if i > 1:
+                A[k - 1, kiM - 1] -= 1
 
-            if i>1:
-                A[k][kiM] = A[k][kiM]-1
-            
-            if central_differences:
-                if i<n:
-                    A[k][kiP] = A[k][kiP]+a(xij,yij)*(h/2)
+            # 0.5*da/dx u
+            A[k - 1, k - 1] += 0.5 * dadx(xij, yij) * (h**2)
 
+            # a du / dx
+            if central_differences:  # central differences
+                if i < n:
+                    A[k - 1, kiP - 1] += a(xij, yij) * (h / 2)
                 if i > 1:
-                    A[k][kiM] = A[k][kiM]-a(xij,yij)*(h/2)
-            else:
-                if i>1:
-                    A[k][kiM] = A[k][kiM]-a(xij,yij)*(h)
-                
-                A[k][k] = A[k][k]+a(xij,yij)*(h)
+                    A[k - 1, kiM - 1] -= a(xij, yij) * (h / 2)
+            else:  # backward differences
+                if i > 1:
+                    A[k - 1, kiM - 1] -= a(xij, yij) * h
+                A[k - 1, k - 1] += a(xij, yij) * h
+
     b = np.zeros(nn)
     xexact = np.zeros(nn)
-    for i in range(0,n+1):
-        xij = i*h
-        for j in range(0,n+1):
-            yij = j*h
-            k = (j-1)*n+1
-            u = (xij*(1-xij)*yij*(1-yij))**2
-            dudx = 2*yij**2*(1-yij)**2*xij*(1-xij)*(1 - 2*xij)
+    
+    # exact function (x(1-x)y(1-y))^2
+    for i in range(1, n + 1):
+        xij = i * h
+        for j in range(1, n + 1):
+            yij = j * h
+            k = (j - 1) * n + i  # linear index
+            
+            u = (xij * (1 - xij) * yij * (1 - yij))**2
+            dudx = 2 * yij**2 * (1 - yij)**2 * xij * (1 - xij) * (1 - 2 * xij)
+            dudxx = 2 * yij**2 * (1 - yij)**2 * (6 * xij**2 - 6 * xij + 1)
+            dudyy = 2 * xij**2 * (1 - xij)**2 * (6 * yij**2 - 6 * yij + 1)
 
-            dudxx = 2*yij**2 * (1-yij)**2 * ( 6*xij**2 - 6*xij + 1);
-            dudyy = 2*xij**2*(1-xij)**2*( 6*yij**2 - 6*yij + 1);
+            b[k - 1] = -dudxx - dudyy + 0.5 * dadx(xij, yij) * u + a(xij, yij) * dudx
+            b[k - 1] *= h * h
 
-            b[k] = - dudxx - dudyy + 0.5*dadx(xij,yij) * u + a(xij,yij) * dudx;
-           
-            b[k] = b[k] * (h*h);
+            xexact[k - 1] = u
 
-            xexact[k] = u;
-    x0 = np.zeros((nn))
+    x0 = np.zeros(nn)
     A = csc_matrix(A)
-    return A,b,xexact,x0,nn
+
+    return A, b, xexact, x0, nn
 
 def GMRES(A, b, x0, m, tol, maxiter):
     n = A.shape[0]
@@ -189,9 +208,7 @@ def GMRES(A, b, x0, m, tol, maxiter):
 def GMRESM(A, b, x0, m, tol, maxiter):
     n = np.shape(A)[0]
     k = 0
-    x = np.zeros(n)
-    x = x0
-    r = np.zeros(n)
+    x = np.copy(x0)
     r = b - A @ x0
     res = []
     rnorm = np.linalg.norm(r)
@@ -208,6 +225,7 @@ def LGMRES(A, b, x0, m, tol, max_iter):
     n = A.shape[0]
     i_outer = 0
     r = [b - A @ x0]
+    x1 = np.copy(x0)
     rnorm = np.linalg.norm(r[-1])
     res = [rnorm]
     it = 0
@@ -281,25 +299,25 @@ def LGMRES(A, b, x0, m, tol, max_iter):
 
         return x, inner_res, z, k + 1
 
-    while res[-1] > tol:
+    while res[-1] > tol and i_outer <1000:
         r1 = []
         if i_outer == 0:
-            x, r1,k1,v = GMRES(A, b, x0, m + 3, tol, m+3)
+            x1, r1,k1,v = GMRES(A, b, x0, m + 3, tol, m+3)
             res.extend(r1)
             z  = v[:,-4:-1]
-            z[:, 0] = x - x0
+            z[:, 0] = x1 - x0
             it += k1
-        elif i_outer <= 3:
-            x, r1, z, k1 = LGMRESMinner(A, b, x, m, i_outer - 1, tol, z, i_outer, max_iter)
+        elif i_outer <=3:
+            x1, r1, z, k1 = LGMRESMinner(A, b, x1, m, i_outer - 1, tol, z, i_outer, 10000)
             res.extend(r1)
             it += k1
         else:
-            x, r1, z, k1 = LGMRESMinner(A, b, x, m, 3, tol, z, i_outer, max_iter)
+            x1, r1, z, k1 = LGMRESMinner(A, b, x1, m, 3, tol, z, i_outer, 10000)
             res.extend(r1)
             it += k1
         i_outer += 1
 
-    return x, res, it
+    return x1, res, it
 
 
 def alphaGMRESM(A, b, x0, m, tol, maxiter):
@@ -340,7 +358,7 @@ def alphaGMRESM(A, b, x0, m, tol, maxiter):
     return x, res, k
 
 def PDGMRESM(A,b,x0,m,tol,maxiter):
-    m_max = m
+    m_max =m*m
     n = np.shape(A)[0]
     k = 0
     i = 0
@@ -399,13 +417,14 @@ t = []
 t1 = []
 t2 = []
 t3 = []
-steps =[4,8,16,24,32,40]
+t4 = []
+steps =[4,8,16,24,32,64]
 l = 0
 for i in steps:
     
     color = next(ax._get_lines.prop_cycler)['color']
     start = time.time()
-    sol,res,it = PDGMRESM(A,b,x0,i,tol,k)
+    sol1,res,it = PDGMRESM(A,b,x0,i,tol,k)
     end = time.time()
     t.append(end-start)
     ax.plot(res ,label='PDGMRES(m):''%s '%i,linewidth=2,linestyle='--',color = color)
@@ -424,6 +443,13 @@ for i in steps:
     t2.append(end-start)
     ax.plot(res ,label='LGMRES(m,3):''%s '%i,linewidth=2,linestyle='dotted',color = color)
     print('LGMRES(m) TIME: ', t2[l])
+    
+    start = time.time()
+    Lsol = lgmres(A,b,x0,inner_m=i,tol=tol,outer_k=3,callback=counter)
+    end = time.time()
+    print('ERROR: ',np.linalg.norm(sol-Lsol[0]))
+    t4.append(end-start)
+    print('scipyLGMRES(m) TIME: ', t4[l])
 
     start = time.time()
     sol,res,it,_ = GMRESM(A,b,x0,i,tol,k)
@@ -439,6 +465,7 @@ for i in steps:
 
 start = time.time()
 sol,res,it,_ = GMRES(A,b,x0,k,tol,k)
+
 
 end = time.time()
 print('GMRES TIME: ',end-start)
@@ -468,13 +495,31 @@ plt.plot(steps,t1,color='black')
 
 plt.scatter(steps,t2,label='LGMRES(m,3)',color='red')
 plt.plot(steps,t2,color='red')
+
+plt.scatter(steps,t4,label='scipyLGMRES(m,3)',color='cyan')
+plt.plot(steps,t4,color='cyan')
+
 plt.scatter(steps,t3,label='GMRES(m)',color='green')
 plt.plot(steps,t3,color='green')
-plt.yscale('log')
-plt.ylim(1)
+#plt.yscale('log')
 plt.xticks(steps)
 plt.ylabel('time in s')
 plt.xlabel('m')
 plt.legend()
+plt.show()
+x = np.linspace(start = 0, stop=1,num = n)
+x,y = np.meshgrid(x,x)
+b = np.reshape(sol,(n,n))
+fig = plt.figure()
+ax = fig.add_subplot(111, projection='3d')
+
+# Plot the surface
+ax.plot_surface(x,y, b, cmap='viridis')  # x1 for X, x1 for Y, sol for Z
+
+# Labeling and showing the plot
+ax.set_xlabel('X')
+ax.set_ylabel('Y')
+ax.set_zlabel('Z')
+plt.title('Surface Plot 2D ConvDiff Problem')
 plt.show()
 #print(counter.niter)
